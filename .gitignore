@@ -1,0 +1,50 @@
+# Binaries
+/trajan*
+/bin/
+*.exe
+
+# Test artifacts
+*.test
+*.out
+coverage.out
+coverage*.out
+coverage.html
+
+# Docs
+docs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+
+# Claude outputs
+.claude/
+
+# Research and planning docs
+docs/
+
+# WASM browser build artifacts
+browser/trajan.wasm
+browser/wasm_exec.js
+browser/build-metadata.json
+browser/trajan-standalone.html
+browser/dist/
+
+# Browser test artifacts
+browser/*.wasm
+browser/*.bak
+browser/trajan-browser-*.zip
+
+# Git worktrees
+.worktrees/
+
+# Feature development artifacts
+.feature-development/
+test-output.txt
+.worktrees/
+.env

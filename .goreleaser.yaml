@@ -1,0 +1,73 @@
+# GoReleaser configuration for Trajan
+# https://goreleaser.com
+version: 2
+
+project_name: trajan
+
+before:
+  hooks:
+    - go mod tidy
+    - make wasm-dist
+
+builds:
+  - id: trajan
+    main: ./cmd/trajan
+    binary: trajan
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.GitCommit={{.Commit}}
+      - -X main.BuildDate={{.Date}}
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+      - zip
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: praetorian-inc
+    name: trajan
+  draft: false
+  prerelease: auto
+  name_template: "Trajan v{{.Version}}"
+  extra_files:
+    - glob: browser/trajan-standalone.html

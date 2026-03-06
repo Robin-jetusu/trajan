@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "Trajan: CI/CD Security Scanner for GitHub Actions"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - name: "Praetorian Security, Inc."
+    website: "https://www.praetorian.com"
+repository-code: "https://github.com/praetorian-inc/trajan"
+url: "https://github.com/praetorian-inc/trajan"
+license: Apache-2.0
+keywords:
+  - ci-cd-security
+  - github-actions
+  - security-scanner
+  - supply-chain-security
+  - actions-injection
+  - pwn-request
+  - devsecops
+  - pipeline-security
+abstract: >-
+  Trajan is a CI/CD security scanner that detects vulnerabilities in GitHub
+  Actions workflows including Actions Injection, Pwn Requests, TOCTOU race
+  conditions, artifact poisoning, and AI prompt injection attacks. It provides
+  both detection capabilities and attack simulation for penetration testing
+  CI/CD pipelines.
