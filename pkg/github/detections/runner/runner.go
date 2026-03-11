@@ -101,7 +101,7 @@ func (d *Detection) Detect(ctx context.Context, g *graph.Graph) ([]detections.Fi
 			}
 			wf := wfNode.(*graph.WorkflowNode)
 
-			isSelfHosted, resolvedRunsOn, err := resolver.resolveCallee(ctx, wf.RepoSlug, job.Uses)
+			isSelfHosted, resolvedRunsOn, err := resolver.resolveCallee(ctx, wf.RepoSlug, job.Uses, 0)
 			if err != nil || !isSelfHosted {
 				continue
 			}

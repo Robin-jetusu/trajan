@@ -11,6 +11,10 @@ import (
 	"github.com/praetorian-inc/trajan/pkg/platforms"
 )
 
+// maxReusableWorkflowDepth matches GitHub's limit of 4 levels of nested
+// reusable workflow calls.
+const maxReusableWorkflowDepth = 4
+
 // calleeResult caches the resolution of a reusable workflow callee.
 type calleeResult struct {
 	isSelfHosted bool
@@ -20,7 +24,8 @@ type calleeResult struct {
 
 // reusableWorkflowResolver resolves the runs-on of reusable workflow callees.
 // It checks local workflows (all_workflows metadata) first, then falls back to
-// the GitHub API for cross-repo references.
+// the GitHub API for cross-repo references. Supports recursive resolution up to
+// maxReusableWorkflowDepth levels (matching GitHub's own limit).
 type reusableWorkflowResolver struct {
 	client       *github.Client
 	allWorkflows map[string][]platforms.Workflow
@@ -40,7 +45,11 @@ func newResolver(client *github.Client, allWorkflows map[string][]platforms.Work
 // usesRef is the job-level `uses:` value, e.g. "org/repo/.github/workflows/build.yml@main"
 // or "./.github/workflows/build.yml".
 // callerRepoSlug is "owner/repo" of the calling workflow.
-func (r *reusableWorkflowResolver) resolveCallee(ctx context.Context, callerRepoSlug, usesRef string) (isSelfHosted bool, runsOn string, err error) {
+func (r *reusableWorkflowResolver) resolveCallee(ctx context.Context, callerRepoSlug, usesRef string, depth int) (isSelfHosted bool, runsOn string, err error) {
+	if depth >= maxReusableWorkflowDepth {
+		return false, "", nil // fail-open at max depth
+	}
+
 	r.mu.Lock()
 	if cached, ok := r.cache[usesRef]; ok {
 		r.mu.Unlock()
@@ -48,7 +57,7 @@ func (r *reusableWorkflowResolver) resolveCallee(ctx context.Context, callerRepo
 	}
 	r.mu.Unlock()
 
-	isSelfHosted, runsOn, err = r.doResolve(ctx, callerRepoSlug, usesRef)
+	isSelfHosted, runsOn, err = r.doResolve(ctx, callerRepoSlug, usesRef, depth)
 
 	r.mu.Lock()
 	r.cache[usesRef] = &calleeResult{isSelfHosted: isSelfHosted, runsOn: runsOn, err: err}
@@ -57,18 +66,18 @@ func (r *reusableWorkflowResolver) resolveCallee(ctx context.Context, callerRepo
 	return isSelfHosted, runsOn, err
 }
 
-func (r *reusableWorkflowResolver) doResolve(ctx context.Context, callerRepoSlug, usesRef string) (bool, string, error) {
+func (r *reusableWorkflowResolver) doResolve(ctx context.Context, callerRepoSlug, usesRef string, depth int) (bool, string, error) {
 	// Local reference: ./.github/workflows/build.yml
 	if strings.HasPrefix(usesRef, "./") {
-		return r.resolveLocal(callerRepoSlug, usesRef)
+		return r.resolveLocal(ctx, callerRepoSlug, usesRef, depth)
 	}
 
 	// Cross-repo reference: owner/repo/.github/workflows/build.yml@ref
-	return r.resolveCrossRepo(ctx, callerRepoSlug, usesRef)
+	return r.resolveCrossRepo(ctx, usesRef, depth)
 }
 
 // resolveLocal resolves a local reusable workflow reference against all_workflows metadata.
-func (r *reusableWorkflowResolver) resolveLocal(callerRepoSlug, usesRef string) (bool, string, error) {
+func (r *reusableWorkflowResolver) resolveLocal(ctx context.Context, callerRepoSlug, usesRef string, depth int) (bool, string, error) {
 	// Strip leading "./"
 	localPath := strings.TrimPrefix(usesRef, "./")
 
@@ -84,7 +93,7 @@ func (r *reusableWorkflowResolver) resolveLocal(callerRepoSlug, usesRef string) 
 
 	for _, wf := range repoWorkflows {
 		if wf.Path == localPath || strings.HasSuffix(wf.Path, "/"+localPath) {
-			return r.parseCalleeContent(wf.Content)
+			return r.parseCalleeContent(ctx, callerRepoSlug, wf.Content, depth)
 		}
 	}
 
@@ -93,7 +102,7 @@ func (r *reusableWorkflowResolver) resolveLocal(callerRepoSlug, usesRef string) 
 
 // resolveCrossRepo resolves a cross-repo reusable workflow reference.
 // Format: owner/repo/path@ref
-func (r *reusableWorkflowResolver) resolveCrossRepo(ctx context.Context, callerRepoSlug, usesRef string) (bool, string, error) {
+func (r *reusableWorkflowResolver) resolveCrossRepo(ctx context.Context, usesRef string, depth int) (bool, string, error) {
 	owner, repo, path, ref, err := parseCrossRepoRef(usesRef)
 	if err != nil {
 		return false, "", err
@@ -106,7 +115,7 @@ func (r *reusableWorkflowResolver) resolveCrossRepo(ctx context.Context, callerR
 		if repoWorkflows, ok := r.allWorkflows[repoSlug]; ok {
 			for _, wf := range repoWorkflows {
 				if wf.Path == path || strings.HasSuffix(wf.Path, "/"+path) {
-					return r.parseCalleeContent(wf.Content)
+					return r.parseCalleeContent(ctx, repoSlug, wf.Content, depth)
 				}
 			}
 		}
@@ -122,11 +131,13 @@ func (r *reusableWorkflowResolver) resolveCrossRepo(ctx context.Context, callerR
 		return false, "", fmt.Errorf("fetching cross-repo workflow %s: %w", usesRef, err)
 	}
 
-	return r.parseCalleeContent(content)
+	return r.parseCalleeContent(ctx, repoSlug, content, depth)
 }
 
 // parseCalleeContent parses workflow YAML and checks if any job uses a self-hosted runner.
-func (r *reusableWorkflowResolver) parseCalleeContent(content []byte) (bool, string, error) {
+// If a callee job itself calls another reusable workflow, recurses using calleeRepoSlug
+// as the context for local (./) references.
+func (r *reusableWorkflowResolver) parseCalleeContent(ctx context.Context, calleeRepoSlug string, content []byte, depth int) (bool, string, error) {
 	p := parser.NewGitHubParser()
 	wf, err := p.Parse(content)
 	if err != nil {
@@ -136,6 +147,17 @@ func (r *reusableWorkflowResolver) parseCalleeContent(content []byte) (bool, str
 	for _, job := range wf.Jobs {
 		if job.SelfHosted {
 			return true, job.RunsOn, nil
+		}
+
+		// Nested reusable workflow call — recurse with the callee's repo slug
+		if job.Uses != "" {
+			isSelfHosted, runsOn, err := r.resolveCallee(ctx, calleeRepoSlug, job.Uses, depth+1)
+			if err != nil {
+				continue // fail-open on nested resolution errors
+			}
+			if isSelfHosted {
+				return true, runsOn, nil
+			}
 		}
 	}
 

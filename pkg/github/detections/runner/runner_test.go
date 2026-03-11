@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -202,4 +203,213 @@ jobs:
 
 	require.Len(t, findings, 1, "local callee with self-hosted runner should produce a finding")
 	assert.Equal(t, detections.VulnSelfHostedRunner, findings[0].Type)
+}
+
+func TestRunnerPlugin_NestedReusableWorkflow_TwoLevels(t *testing.T) {
+	// A calls B (cross-repo), B calls C (local to B's repo), C has self-hosted.
+	// Tests recursive resolution AND correct slug threading.
+	callerYAML := `
+name: CI
+on: push
+jobs:
+  call-b:
+    uses: org/middle/.github/workflows/b.yml@main
+`
+	// B is in org/middle and calls C locally
+	middleYAML := `
+name: Middle
+on: workflow_call
+jobs:
+  call-c:
+    uses: ./.github/workflows/c.yml
+`
+	// C is in org/middle (same repo as B) and uses self-hosted
+	leafYAML := `
+name: Leaf
+on: workflow_call
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - run: echo "self-hosted leaf"
+`
+	g, err := analysis.BuildGraph("owner/repo", ".github/workflows/ci.yml", []byte(callerYAML))
+	require.NoError(t, err)
+
+	allWorkflows := map[string][]platforms.Workflow{
+		"org/middle": {
+			{
+				Name:     "b.yml",
+				Path:     ".github/workflows/b.yml",
+				Content:  []byte(middleYAML),
+				RepoSlug: "org/middle",
+			},
+			{
+				Name:     "c.yml",
+				Path:     ".github/workflows/c.yml",
+				Content:  []byte(leafYAML),
+				RepoSlug: "org/middle",
+			},
+		},
+	}
+	g.SetMetadata("all_workflows", allWorkflows)
+
+	plugin := New()
+	findings, err := plugin.Detect(context.Background(), g)
+	require.NoError(t, err)
+
+	require.Len(t, findings, 1, "nested callee (2 levels) with self-hosted runner should produce a finding")
+	assert.Equal(t, detections.VulnSelfHostedRunner, findings[0].Type)
+}
+
+func TestRunnerPlugin_NestedReusableWorkflow_ThreeLevels(t *testing.T) {
+	// A → B → C → D, where D has self-hosted. Three levels of indirection.
+	callerYAML := `
+name: CI
+on: push
+jobs:
+  call-b:
+    uses: org/b/.github/workflows/b.yml@main
+`
+	bYAML := `
+name: B
+on: workflow_call
+jobs:
+  call-c:
+    uses: org/c/.github/workflows/c.yml@main
+`
+	cYAML := `
+name: C
+on: workflow_call
+jobs:
+  call-d:
+    uses: ./.github/workflows/d.yml
+`
+	dYAML := `
+name: D
+on: workflow_call
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - run: echo "deep self-hosted"
+`
+	g, err := analysis.BuildGraph("owner/repo", ".github/workflows/ci.yml", []byte(callerYAML))
+	require.NoError(t, err)
+
+	allWorkflows := map[string][]platforms.Workflow{
+		"org/b": {
+			{Name: "b.yml", Path: ".github/workflows/b.yml", Content: []byte(bYAML), RepoSlug: "org/b"},
+		},
+		"org/c": {
+			{Name: "c.yml", Path: ".github/workflows/c.yml", Content: []byte(cYAML), RepoSlug: "org/c"},
+			{Name: "d.yml", Path: ".github/workflows/d.yml", Content: []byte(dYAML), RepoSlug: "org/c"},
+		},
+	}
+	g.SetMetadata("all_workflows", allWorkflows)
+
+	plugin := New()
+	findings, err := plugin.Detect(context.Background(), g)
+	require.NoError(t, err)
+
+	require.Len(t, findings, 1, "nested callee (3 levels) with self-hosted runner should produce a finding")
+	assert.Equal(t, detections.VulnSelfHostedRunner, findings[0].Type)
+}
+
+func TestRunnerPlugin_NestedReusableWorkflow_DepthLimitFailsOpen(t *testing.T) {
+	// Build a chain deeper than maxReusableWorkflowDepth (4).
+	// Each level calls the next. Should fail open (0 findings), not panic.
+	callerYAML := `
+name: CI
+on: push
+jobs:
+  call-l1:
+    uses: org/r/.github/workflows/l1.yml@main
+`
+	makeLevel := func(next string) string {
+		return fmt.Sprintf(`
+name: Level
+on: workflow_call
+jobs:
+  next:
+    uses: %s
+`, next)
+	}
+
+	allWorkflows := map[string][]platforms.Workflow{
+		"org/r": {
+			{Name: "l1.yml", Path: ".github/workflows/l1.yml", Content: []byte(makeLevel("org/r/.github/workflows/l2.yml@main")), RepoSlug: "org/r"},
+			{Name: "l2.yml", Path: ".github/workflows/l2.yml", Content: []byte(makeLevel("org/r/.github/workflows/l3.yml@main")), RepoSlug: "org/r"},
+			{Name: "l3.yml", Path: ".github/workflows/l3.yml", Content: []byte(makeLevel("org/r/.github/workflows/l4.yml@main")), RepoSlug: "org/r"},
+			{Name: "l4.yml", Path: ".github/workflows/l4.yml", Content: []byte(makeLevel("org/r/.github/workflows/l5.yml@main")), RepoSlug: "org/r"},
+			{Name: "l5.yml", Path: ".github/workflows/l5.yml", Content: []byte(`
+name: Deep Leaf
+on: workflow_call
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - run: echo "too deep"
+`), RepoSlug: "org/r"},
+		},
+	}
+
+	g, err := analysis.BuildGraph("owner/repo", ".github/workflows/ci.yml", []byte(callerYAML))
+	require.NoError(t, err)
+	g.SetMetadata("all_workflows", allWorkflows)
+
+	plugin := New()
+	findings, err := plugin.Detect(context.Background(), g)
+	require.NoError(t, err)
+
+	assert.Len(t, findings, 0, "chain exceeding max depth should fail open with 0 findings")
+}
+
+func TestRunnerPlugin_NestedReusableWorkflow_WrongSlugNoFalsePositive(t *testing.T) {
+	// A calls B in org/middle. B calls ./.github/workflows/c.yml (local to org/middle).
+	// c.yml only exists in owner/repo, NOT in org/middle.
+	// Should NOT resolve — the local ref must use B's repo slug, not A's.
+	callerYAML := `
+name: CI
+on: push
+jobs:
+  call-b:
+    uses: org/middle/.github/workflows/b.yml@main
+`
+	middleYAML := `
+name: Middle
+on: workflow_call
+jobs:
+  call-c:
+    uses: ./.github/workflows/c.yml
+`
+	selfHostedYAML := `
+name: SelfHosted
+on: workflow_call
+jobs:
+  build:
+    runs-on: self-hosted
+    steps:
+      - run: echo "self-hosted"
+`
+	g, err := analysis.BuildGraph("owner/repo", ".github/workflows/ci.yml", []byte(callerYAML))
+	require.NoError(t, err)
+
+	allWorkflows := map[string][]platforms.Workflow{
+		"org/middle": {
+			{Name: "b.yml", Path: ".github/workflows/b.yml", Content: []byte(middleYAML), RepoSlug: "org/middle"},
+			// c.yml is NOT here — it's missing from org/middle
+		},
+		"owner/repo": {
+			// c.yml exists here but should NOT be used for B's local ./ reference
+			{Name: "c.yml", Path: ".github/workflows/c.yml", Content: []byte(selfHostedYAML), RepoSlug: "owner/repo"},
+		},
+	}
+	g.SetMetadata("all_workflows", allWorkflows)
+
+	plugin := New()
+	findings, err := plugin.Detect(context.Background(), g)
+	require.NoError(t, err)
+
+	assert.Len(t, findings, 0, "local ref in B should resolve against org/middle, not owner/repo")
 }
