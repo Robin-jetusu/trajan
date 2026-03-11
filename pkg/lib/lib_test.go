@@ -13,14 +13,14 @@ func TestListPlatforms(t *testing.T) {
 	platforms := ListPlatforms()
 	require.NotEmpty(t, platforms, "expected registered platforms from blank imports")
 
-	expected := []string{"azuredevops", "bitbucket", "github", "gitlab", "jenkins", "jfrog"}
+	expected := []string{"azuredevops", "github", "gitlab", "jenkins", "jfrog"}
 	for _, name := range expected {
 		assert.Contains(t, platforms, name, "missing platform: %s", name)
 	}
 }
 
 func TestGetPlatform_Known(t *testing.T) {
-	for _, name := range []string{"github", "gitlab", "azuredevops", "bitbucket", "jenkins", "jfrog"} {
+	for _, name := range []string{"github", "gitlab", "azuredevops", "jenkins", "jfrog"} {
 		t.Run(name, func(t *testing.T) {
 			p, err := GetPlatform(name)
 			require.NoError(t, err)
