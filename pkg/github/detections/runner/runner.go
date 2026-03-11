@@ -11,6 +11,7 @@ import (
 	"github.com/praetorian-inc/trajan/pkg/detections/base"
 	"github.com/praetorian-inc/trajan/pkg/github"
 	"github.com/praetorian-inc/trajan/pkg/github/detections/common"
+	"github.com/praetorian-inc/trajan/pkg/platforms"
 )
 
 func init() {
@@ -70,6 +71,48 @@ func (d *Detection) Detect(ctx context.Context, g *graph.Graph) ([]detections.Fi
 		// OR if we couldn't check runner existence
 		if runnersExist || !hasRunnerData {
 			findings = append(findings, createFinding(wf, job, hasRunnerData, runnersExist))
+		}
+	}
+
+	// Second pass: resolve reusable workflow callers (jobs with Uses set).
+	// The parser now skips tagging these, so we resolve the callee to check.
+	var ghClient *github.Client
+	if clientData, ok := g.GetMetadata("github_client"); ok {
+		ghClient, _ = clientData.(*github.Client)
+	}
+	var allWorkflows map[string][]platforms.Workflow
+	if wfData, ok := g.GetMetadata("all_workflows"); ok {
+		allWorkflows, _ = wfData.(map[string][]platforms.Workflow)
+	}
+
+	// Only proceed if we have at least some way to resolve callees
+	if ghClient != nil || allWorkflows != nil {
+		resolver := newResolver(ghClient, allWorkflows)
+
+		for _, node := range g.GetNodesByType(graph.NodeTypeJob) {
+			job := node.(*graph.JobNode)
+			if job.Uses == "" {
+				continue
+			}
+
+			wfNode, ok := g.GetNode(job.Parent())
+			if !ok {
+				continue
+			}
+			wf := wfNode.(*graph.WorkflowNode)
+
+			isSelfHosted, resolvedRunsOn, err := resolver.resolveCallee(ctx, wf.RepoSlug, job.Uses)
+			if err != nil || !isSelfHosted {
+				continue
+			}
+
+			// Tag the job so it appears in downstream analysis
+			job.AddTag(graph.TagSelfHostedRunner)
+			job.RunsOn = resolvedRunsOn
+
+			if runnersExist || !hasRunnerData {
+				findings = append(findings, createFinding(wf, job, hasRunnerData, runnersExist))
+			}
 		}
 	}
 
