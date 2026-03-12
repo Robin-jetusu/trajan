@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/praetorian-inc/trajan/internal/registry"
 	"github.com/praetorian-inc/trajan/pkg/analysis/graph"
@@ -23,6 +24,8 @@ func init() {
 // Detection detects self-hosted runner usage
 type Detection struct {
 	base.BaseDetection
+	resolver     *reusableWorkflowResolver
+	resolverOnce sync.Once
 }
 
 // New creates a new runner plugin
@@ -87,7 +90,9 @@ func (d *Detection) Detect(ctx context.Context, g *graph.Graph) ([]detections.Fi
 
 	// Only proceed if we have at least some way to resolve callees
 	if ghClient != nil || allWorkflows != nil {
-		resolver := newResolver(ghClient, allWorkflows)
+		d.resolverOnce.Do(func() {
+			d.resolver = newResolver(ghClient, allWorkflows)
+		})
 
 		for _, node := range g.GetNodesByType(graph.NodeTypeJob) {
 			job := node.(*graph.JobNode)
@@ -101,13 +106,13 @@ func (d *Detection) Detect(ctx context.Context, g *graph.Graph) ([]detections.Fi
 			}
 			wf := wfNode.(*graph.WorkflowNode)
 
-			isSelfHosted, resolvedRunsOn, err := resolver.resolveCallee(ctx, wf.RepoSlug, job.Uses, 0)
+			isSelfHosted, resolvedRunsOn, err := d.resolver.resolveCallee(ctx, wf.RepoSlug, job.Uses, 0)
 			if err != nil || !isSelfHosted {
 				continue
 			}
 
-			// Tag the job so it appears in downstream analysis
-			job.AddTag(graph.TagSelfHostedRunner)
+			// Tag the job and update the graph index so downstream queries find it
+			g.UpdateNodeTag(job.ID(), graph.TagSelfHostedRunner)
 			job.RunsOn = resolvedRunsOn
 
 			if runnersExist || !hasRunnerData {
